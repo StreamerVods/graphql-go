@@ -40,6 +40,7 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *query
 
 		var in []reflect.Value
 		if f.field.HasContext {
+			ctx = contextWithSelectedFields(ctx, f.sels)
 			in = append(in, reflect.ValueOf(ctx))
 		}
 		if f.field.ArgsPacker != nil {
