@@ -297,6 +297,7 @@ func NewResolver() *Resolver {
 type selectedField struct {
 	name     string
 	children map[string]*selectedField
+	args     map[string]interface{}
 }
 
 var (
@@ -314,6 +315,7 @@ func generateSelectedFieldMap(ctx context.Context) *selectedField {
 			m[f.Name] = &selectedField{
 				name:     f.Name,
 				children: loop(f.SelectedFields),
+				args:     f.Args,
 			}
 		}
 		return m

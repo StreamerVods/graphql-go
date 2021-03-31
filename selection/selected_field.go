@@ -5,4 +5,5 @@ package selection
 type SelectedField struct {
 	Name           string
 	SelectedFields []*SelectedField
+	Args           map[string]interface{}
 }
