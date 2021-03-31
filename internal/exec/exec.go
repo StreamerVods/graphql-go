@@ -51,11 +51,44 @@ func makePanicError(value interface{}) *errors.QueryError {
 
 func (r *Request) Execute(ctx context.Context, s *resolvable.Schema, op *query.Operation) ([]byte, []*errors.QueryError) {
 	var out bytes.Buffer
-	func() {
+	err := func() error {
 		defer r.handlePanic(ctx)
 		sels := selected.ApplyOperation(&r.Request, s, op)
-		r.execSelections(ctx, sels, nil, s, s.Resolver, &out, op.Type == query.Mutation)
+		var resolver reflect.Value
+		if s.ResolverInfo.IsFunc {
+			args := []reflect.Value{}
+			if s.ResolverInfo.HasContext {
+				ctx = contextWithSelectedFields(ctx, sels)
+				args = append(args, reflect.ValueOf(ctx))
+			}
+			if s.ResolverInfo.HasVariables {
+				args = append(args, reflect.ValueOf(r.Vars))
+			}
+			vals := s.Resolver.Call(args)
+			if len(vals) > 1 {
+				err := vals[1].Interface()
+				if err != nil {
+					switch t := err.(type) {
+					case error:
+						return t
+					default:
+						return fmt.Errorf("%v", err)
+					}
+				}
+			}
+			resolver = vals[0]
+			if resolver.IsNil() {
+				return fmt.Errorf("resolver is nil")
+			}
+		} else {
+			resolver = s.Resolver
+		}
+		r.execSelections(ctx, sels, nil, s, resolver, &out, op.Type == query.Mutation)
+		return nil
 	}()
+	if err != nil {
+		return nil, []*errors.QueryError{errors.Errorf("%s", err)}
+	}
 
 	if err := ctx.Err(); err != nil {
 		return nil, []*errors.QueryError{errors.Errorf("%s", err)}
@@ -100,6 +133,12 @@ func (r *Request) execSelections(ctx context.Context, sels []selected.Selection,
 		}
 	}
 
+	if len(fields) == 1 {
+		if _, ok := fields[0].field.Type.(*common.RootResolver); ok {
+			out.Write(fields[0].out.Bytes())
+			return
+		}
+	}
 	out.WriteByte('{')
 	for i, f := range fields {
 		// If a non-nullable child resolved to null, an error was added to the
@@ -293,7 +332,7 @@ func (r *Request) execSelectionSet(ctx context.Context, sels []selected.Selectio
 	}
 
 	switch t.(type) {
-	case *schema.Object, *schema.Interface, *schema.Union:
+	case *schema.Object, *schema.Interface, *schema.Union, *common.RootResolver:
 		r.execSelections(ctx, sels, path, s, resolver, out, false)
 		return
 	}

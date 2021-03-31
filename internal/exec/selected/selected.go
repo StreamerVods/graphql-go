@@ -30,14 +30,14 @@ func (r *Request) AddError(err *errors.QueryError) {
 }
 
 func ApplyOperation(r *Request, s *resolvable.Schema, op *query.Operation) []Selection {
-	var obj *resolvable.Object
+	var obj resolvable.Resolvable
 	switch op.Type {
 	case query.Query:
-		obj = s.Query.(*resolvable.Object)
+		obj = s.Query
 	case query.Mutation:
-		obj = s.Mutation.(*resolvable.Object)
+		obj = s.Mutation
 	case query.Subscription:
-		obj = s.Subscription.(*resolvable.Object)
+		obj = s.Subscription
 	}
 	return applySelectionSet(r, s, obj, op.Selections)
 }
@@ -70,7 +70,20 @@ func (*SchemaField) isSelection()   {}
 func (*TypeAssertion) isSelection() {}
 func (*TypenameField) isSelection() {}
 
-func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, sels []query.Selection) (flattenedSels []Selection) {
+func applySelectionSet(r *Request, s *resolvable.Schema, e resolvable.Resolvable, sels []query.Selection) (flattenedSels []Selection) {
+	var q *resolvable.Object
+	switch t := e.(type) {
+	case *resolvable.RootResolver:
+		return []Selection{
+			&SchemaField{
+				Alias: t.FunctionResolver.TypeName,
+				Sels:  applySelectionSet(r, s, t.Query, sels),
+				Field: *t.FunctionResolver,
+			},
+		}
+	case *resolvable.Object:
+		q = t
+	}
 	for _, sel := range sels {
 		switch sel := sel.(type) {
 		case *query.Field:
@@ -84,7 +97,7 @@ func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, s
 				// __typename is available even though r.DisableIntrospection == true
 				// because it is necessary when using union types and interfaces: https://graphql.org/learn/schema/#union-types
 				flattenedSels = append(flattenedSels, &TypenameField{
-					Object: *e,
+					Object: *q,
 					Alias:  field.Alias.Name,
 				})
 
@@ -123,7 +136,7 @@ func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, s
 				}
 
 			default:
-				fe := e.Fields[field.Name.Name]
+				fe := q.Fields[field.Name.Name]
 
 				var args map[string]interface{}
 				var packedArgs reflect.Value
@@ -156,14 +169,14 @@ func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, s
 			if skipByDirective(r, frag.Directives) {
 				continue
 			}
-			flattenedSels = append(flattenedSels, applyFragment(r, s, e, &frag.Fragment)...)
+			flattenedSels = append(flattenedSels, applyFragment(r, s, q, &frag.Fragment)...)
 
 		case *query.FragmentSpread:
 			spread := sel
 			if skipByDirective(r, spread.Directives) {
 				continue
 			}
-			flattenedSels = append(flattenedSels, applyFragment(r, s, e, &r.Doc.Fragments.Get(spread.Name.Name).Fragment)...)
+			flattenedSels = append(flattenedSels, applyFragment(r, s, q, &r.Doc.Fragments.Get(spread.Name.Name).Fragment)...)
 
 		default:
 			panic("invalid type")

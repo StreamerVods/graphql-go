@@ -70,7 +70,7 @@ func (r *echoResolver) Echo(args struct{ Value *string }) *string {
 	return args.Value
 }
 
-var starwarsSchema = graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})
+var starwarsSchema = graphql.MustParseSchema(starwars.Schema, starwars.NewResolverCtx, graphql.UseFieldResolvers())
 
 type ResolverError interface {
 	error
@@ -545,6 +545,22 @@ func TestRootOperations_validSchema(t *testing.T) {
 
 func TestBasic(t *testing.T) {
 	gqltesting.RunTests(t, []*gqltesting.Test{
+		{
+			Schema: starwarsSchema,
+			Query: `
+				mutation {
+					hero {
+						stars
+						commentary
+					}
+				}
+			`,
+			ExpectedResult: `
+				{
+					"hero": []
+				}
+			`,
+		},
 		{
 			Schema: starwarsSchema,
 			Query: `
@@ -2459,7 +2475,7 @@ func TestIntrospection(t *testing.T) {
 	})
 }
 
-var starwarsSchemaNoIntrospection = graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{}, []graphql.SchemaOpt{graphql.DisableIntrospection()}...)
+var starwarsSchemaNoIntrospection = graphql.MustParseSchema(starwars.Schema, starwars.NewResolver(), []graphql.SchemaOpt{graphql.DisableIntrospection(), graphql.UseFieldResolvers()}...)
 
 func TestIntrospectionDisableIntrospection(t *testing.T) {
 	gqltesting.RunTests(t, []*gqltesting.Test{

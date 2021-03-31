@@ -4,12 +4,14 @@
 package starwars
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
 
 	graphql "github.com/graph-gophers/graphql-go"
+	"github.com/graph-gophers/graphql-go/selection"
 )
 
 var Schema = `
@@ -29,6 +31,7 @@ var Schema = `
 	}
 	# The mutation type, represents all updates we can make to our data
 	type Mutation {
+		hero: [Review]!
 		createReview(episode: Episode!, review: ReviewInput!): Review
 	}
 	# The episodes in the Star Wars trilogy
@@ -284,16 +287,76 @@ type review struct {
 
 var reviews = make(map[string][]*review)
 
-type Resolver struct{}
+func NewResolver() *Resolver {
+	return &Resolver{
+		Query:    &queryResolver{},
+		Mutation: &mutationResolver{},
+	}
+}
 
-func (r *Resolver) Hero(args struct{ Episode string }) *characterResolver {
+type selectedField struct {
+	name     string
+	children map[string]*selectedField
+}
+
+var (
+	errInternalServer = fmt.Errorf("internal server error")
+)
+
+func generateSelectedFieldMap(ctx context.Context) *selectedField {
+	var loop func(fields []*selection.SelectedField) map[string]*selectedField
+	loop = func(fields []*selection.SelectedField) map[string]*selectedField {
+		if len(fields) == 0 {
+			return nil
+		}
+		m := map[string]*selectedField{}
+		for _, f := range fields {
+			m[f.Name] = &selectedField{
+				name:     f.Name,
+				children: loop(f.SelectedFields),
+			}
+		}
+		return m
+	}
+	children := loop(graphql.SelectedFieldsFromContext(ctx))
+	return &selectedField{
+		name:     "query",
+		children: children,
+	}
+}
+
+func NewResolverCtx(ctx context.Context) (*Resolver, error) {
+	return &Resolver{
+		Query:    &queryResolver{},
+		Mutation: &mutationResolver{},
+	}, nil
+}
+
+type Resolver struct {
+	Query    *queryResolver
+	Mutation *mutationResolver
+}
+
+// func (*Resolver) Query(ctx context.Context) (*queryResolver, error) {
+// 	return &queryResolver{}, nil
+// }
+
+type queryResolver struct{}
+
+// func (*Resolver) Mutation(ctx context.Context) (*mutationResolver, error) {
+// 	return &mutationResolver{}, nil
+// }
+
+type mutationResolver struct{}
+
+func (r *queryResolver) Hero(args struct{ Episode string }) *characterResolver {
 	if args.Episode == "EMPIRE" {
 		return &characterResolver{&humanResolver{humanData["1000"]}}
 	}
 	return &characterResolver{&droidResolver{droidData["2001"]}}
 }
 
-func (r *Resolver) Reviews(args struct{ Episode string }) []*reviewResolver {
+func (r *queryResolver) Reviews(args struct{ Episode string }) []*reviewResolver {
 	var l []*reviewResolver
 	for _, review := range reviews[args.Episode] {
 		l = append(l, &reviewResolver{review})
@@ -301,7 +364,7 @@ func (r *Resolver) Reviews(args struct{ Episode string }) []*reviewResolver {
 	return l
 }
 
-func (r *Resolver) Search(args struct{ Text string }) []*searchResultResolver {
+func (r *queryResolver) Search(args struct{ Text string }) []*searchResultResolver {
 	var l []*searchResultResolver
 	for _, h := range humans {
 		if strings.Contains(h.Name, args.Text) {
@@ -321,7 +384,7 @@ func (r *Resolver) Search(args struct{ Text string }) []*searchResultResolver {
 	return l
 }
 
-func (r *Resolver) Character(args struct{ ID graphql.ID }) *characterResolver {
+func (r *queryResolver) Character(args struct{ ID graphql.ID }) *characterResolver {
 	if h := humanData[args.ID]; h != nil {
 		return &characterResolver{&humanResolver{h}}
 	}
@@ -331,28 +394,28 @@ func (r *Resolver) Character(args struct{ ID graphql.ID }) *characterResolver {
 	return nil
 }
 
-func (r *Resolver) Human(args struct{ ID graphql.ID }) *humanResolver {
+func (r *queryResolver) Human(args struct{ ID graphql.ID }) *humanResolver {
 	if h := humanData[args.ID]; h != nil {
 		return &humanResolver{h}
 	}
 	return nil
 }
 
-func (r *Resolver) Droid(args struct{ ID graphql.ID }) *droidResolver {
+func (r *queryResolver) Droid(args struct{ ID graphql.ID }) *droidResolver {
 	if d := droidData[args.ID]; d != nil {
 		return &droidResolver{d}
 	}
 	return nil
 }
 
-func (r *Resolver) Starship(args struct{ ID graphql.ID }) *starshipResolver {
+func (r *queryResolver) Starship(args struct{ ID graphql.ID }) *starshipResolver {
 	if s := starshipData[args.ID]; s != nil {
 		return &starshipResolver{s}
 	}
 	return nil
 }
 
-func (r *Resolver) CreateReview(args *struct {
+func (r *mutationResolver) CreateReview(args *struct {
 	Episode string
 	Review  *reviewInput
 }) *reviewResolver {
@@ -362,6 +425,14 @@ func (r *Resolver) CreateReview(args *struct {
 	}
 	reviews[args.Episode] = append(reviews[args.Episode], review)
 	return &reviewResolver{review}
+}
+
+func (r *mutationResolver) Hero() []*reviewResolver {
+	var l []*reviewResolver
+	for _, review := range reviews["NEWHOPE"] {
+		l = append(l, &reviewResolver{review})
+	}
+	return l
 }
 
 type friendsConnectionArgs struct {

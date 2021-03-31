@@ -23,13 +23,13 @@ func newMeta(s *schema.Schema) *Meta {
 	b := newBuilder(s)
 
 	metaSchema := s.Types["__Schema"].(*schema.Object)
-	so, err := b.makeObjectExec(metaSchema.Name, metaSchema.Fields, nil, false, reflect.TypeOf(&introspection.Schema{}))
+	so, err := b.makeObjectExec(metaSchema.Name, metaSchema.Fields, nil, false, reflect.TypeOf(&introspection.Schema{}), false)
 	if err != nil {
 		panic(err)
 	}
 
 	metaType := s.Types["__Type"].(*schema.Object)
-	t, err := b.makeObjectExec(metaType.Name, metaType.Fields, nil, false, reflect.TypeOf(&introspection.Type{}))
+	t, err := b.makeObjectExec(metaType.Name, metaType.Fields, nil, false, reflect.TypeOf(&introspection.Type{}), false)
 	if err != nil {
 		panic(err)
 	}
@@ -66,7 +66,7 @@ func newMeta(s *schema.Schema) *Meta {
 		FieldSchema:   fieldSchema,
 		FieldTypename: fieldTypename,
 		FieldType:     fieldType,
-		Schema:        so,
-		Type:          t,
+		Schema:        so.(*Object),
+		Type:          t.(*Object),
 	}
 }

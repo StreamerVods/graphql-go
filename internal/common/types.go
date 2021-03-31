@@ -21,13 +21,17 @@ type TypeName struct {
 	Ident
 }
 
-func (*List) Kind() string     { return "LIST" }
-func (*NonNull) Kind() string  { return "NON_NULL" }
-func (*TypeName) Kind() string { panic("TypeName needs to be resolved to actual type") }
+type RootResolver struct{}
 
-func (t *List) String() string    { return "[" + t.OfType.String() + "]" }
-func (t *NonNull) String() string { return t.OfType.String() + "!" }
-func (*TypeName) String() string  { panic("TypeName needs to be resolved to actual type") }
+func (*List) Kind() string         { return "LIST" }
+func (*NonNull) Kind() string      { return "NON_NULL" }
+func (*RootResolver) Kind() string { return "ROOT_RESOLVER" }
+func (*TypeName) Kind() string     { panic("TypeName needs to be resolved to actual type") }
+
+func (t *List) String() string       { return "[" + t.OfType.String() + "]" }
+func (t *NonNull) String() string    { return t.OfType.String() + "!" }
+func (*RootResolver) String() string { panic("RootResolver should be ignored") }
+func (*TypeName) String() string     { panic("TypeName needs to be resolved to actual type") }
 
 func ParseType(l *Lexer) Type {
 	t := parseNullType(l)

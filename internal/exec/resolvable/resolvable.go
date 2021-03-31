@@ -18,6 +18,13 @@ type Schema struct {
 	Mutation     Resolvable
 	Subscription Resolvable
 	Resolver     reflect.Value
+	ResolverInfo ResolverInfo
+}
+
+type ResolverInfo struct {
+	IsFunc       bool
+	HasContext   bool
+	HasVariables bool
 }
 
 type Resolvable interface {
@@ -61,6 +68,13 @@ func (*Object) isResolvable() {}
 func (*List) isResolvable()   {}
 func (*Scalar) isResolvable() {}
 
+type RootResolver struct {
+	FunctionResolver *Field
+	Query            *Object
+}
+
+func (*RootResolver) isResolvable() {}
+
 func ApplyResolver(s *schema.Schema, resolver interface{}) (*Schema, error) {
 	if resolver == nil {
 		return &Schema{Meta: newMeta(s), Schema: *s}, nil
@@ -68,22 +82,54 @@ func ApplyResolver(s *schema.Schema, resolver interface{}) (*Schema, error) {
 
 	b := newBuilder(s)
 
+	rInfo := ResolverInfo{}
+	var rType reflect.Type
+	inspectedType := reflect.TypeOf(resolver)
+	if inspectedType.Kind() != reflect.Func {
+		rType = inspectedType
+	} else {
+		outs := inspectedType.NumOut()
+		if outs == 0 {
+			return nil, fmt.Errorf("resolver function returns no values")
+		}
+		rType = inspectedType.Out(0)
+		in := make([]reflect.Type, inspectedType.NumIn())
+		for i := range in {
+			in[i] = inspectedType.In(i)
+		}
+
+		rInfo.HasContext = len(in) > 0 && in[0] == contextType
+		if rInfo.HasContext {
+			in = in[1:]
+		}
+		rInfo.HasVariables = len(in) > 0 && in[0] == varsType
+		if rInfo.HasVariables {
+			in = in[1:]
+		}
+
+		if len(in) > 0 {
+			return nil, fmt.Errorf("too many parameters")
+		}
+
+		rInfo.IsFunc = true
+	}
+
 	var query, mutation, subscription Resolvable
 
 	if t, ok := s.EntryPoints["query"]; ok {
-		if err := b.assignExec(&query, t, reflect.TypeOf(resolver)); err != nil {
+		if err := b.assignExec(&query, t, rType, true); err != nil {
 			return nil, err
 		}
 	}
 
 	if t, ok := s.EntryPoints["mutation"]; ok {
-		if err := b.assignExec(&mutation, t, reflect.TypeOf(resolver)); err != nil {
+		if err := b.assignExec(&mutation, t, rType, true); err != nil {
 			return nil, err
 		}
 	}
 
 	if t, ok := s.EntryPoints["subscription"]; ok {
-		if err := b.assignExec(&subscription, t, reflect.TypeOf(resolver)); err != nil {
+		if err := b.assignExec(&subscription, t, rType, true); err != nil {
 			return nil, err
 		}
 	}
@@ -99,6 +145,7 @@ func ApplyResolver(s *schema.Schema, resolver interface{}) (*Schema, error) {
 		Query:        query,
 		Mutation:     mutation,
 		Subscription: subscription,
+		ResolverInfo: rInfo,
 	}, nil
 }
 
@@ -136,14 +183,14 @@ func (b *execBuilder) finish() error {
 	return b.packerBuilder.Finish()
 }
 
-func (b *execBuilder) assignExec(target *Resolvable, t common.Type, resolverType reflect.Type) error {
+func (b *execBuilder) assignExec(target *Resolvable, t common.Type, resolverType reflect.Type, isRoot bool) error {
 	k := typePair{t, resolverType}
 	ref, ok := b.resMap[k]
 	if !ok {
 		ref = &resMapEntry{}
 		b.resMap[k] = ref
 		var err error
-		ref.exec, err = b.makeExec(t, resolverType)
+		ref.exec, err = b.makeExec(t, resolverType, isRoot)
 		if err != nil {
 			return err
 		}
@@ -152,19 +199,22 @@ func (b *execBuilder) assignExec(target *Resolvable, t common.Type, resolverType
 	return nil
 }
 
-func (b *execBuilder) makeExec(t common.Type, resolverType reflect.Type) (Resolvable, error) {
+func (b *execBuilder) makeExec(t common.Type, resolverType reflect.Type, isRoot bool) (Resolvable, error) {
 	var nonNull bool
 	t, nonNull = unwrapNonNull(t)
 
 	switch t := t.(type) {
 	case *schema.Object:
-		return b.makeObjectExec(t.Name, t.Fields, nil, nonNull, resolverType)
+		return b.makeObjectExec(t.Name, t.Fields, nil, nonNull, resolverType, isRoot)
 
 	case *schema.Interface:
-		return b.makeObjectExec(t.Name, t.Fields, t.PossibleTypes, nonNull, resolverType)
+		return b.makeObjectExec(t.Name, t.Fields, t.PossibleTypes, nonNull, resolverType, isRoot)
 
 	case *schema.Union:
-		return b.makeObjectExec(t.Name, nil, t.PossibleTypes, nonNull, resolverType)
+		return b.makeObjectExec(t.Name, nil, t.PossibleTypes, nonNull, resolverType, isRoot)
+
+	case *common.RootResolver:
+		return nil, nil
 	}
 
 	if !nonNull {
@@ -186,7 +236,7 @@ func (b *execBuilder) makeExec(t common.Type, resolverType reflect.Type) (Resolv
 			return nil, fmt.Errorf("%s is not a slice", resolverType)
 		}
 		e := &List{}
-		if err := b.assignExec(&e.Elem, t.OfType, resolverType.Elem()); err != nil {
+		if err := b.assignExec(&e.Elem, t.OfType, resolverType.Elem(), false); err != nil {
 			return nil, err
 		}
 		return e, nil
@@ -217,7 +267,7 @@ func makeScalarExec(t *schema.Scalar, resolverType reflect.Type) (Resolvable, er
 }
 
 func (b *execBuilder) makeObjectExec(typeName string, fields schema.FieldList, possibleTypes []*schema.Object,
-	nonNull bool, resolverType reflect.Type) (*Object, error) {
+	nonNull bool, resolverType reflect.Type, isRoot bool) (Resolvable, error) {
 	if !nonNull {
 		if resolverType.Kind() != reflect.Ptr && resolverType.Kind() != reflect.Interface {
 			return nil, fmt.Errorf("%s is not a pointer or interface", resolverType)
@@ -229,6 +279,115 @@ func (b *execBuilder) makeObjectExec(typeName string, fields schema.FieldList, p
 	Fields := make(map[string]*Field)
 	rt := unwrapPtr(resolverType)
 	fieldsCount := fieldCount(rt, map[string]int{})
+	if isRoot && !b.schema.DisableRootResolvers {
+		fe, err := func() (Resolvable, error) {
+			var fieldIndex []int
+			methodIndex := findMethod(resolverType, typeName)
+			if b.schema.UseFieldResolvers && methodIndex == -1 {
+				if fieldsCount[strings.ToLower(stripUnderscore(typeName))] > 1 {
+					return nil, nil
+				}
+				fieldIndex = findField(rt, typeName, []int{})
+			}
+			if methodIndex == -1 && len(fieldIndex) == 0 {
+				return nil, nil
+			}
+
+			var m reflect.Method
+			var sf reflect.StructField
+			var fe Resolvable
+			var err error
+
+			if methodIndex != -1 {
+				m = resolverType.Method(methodIndex)
+				fe, err = b.makeObjectExec(typeName, fields, possibleTypes, nonNull, m.Type.Out(0), false)
+			} else {
+				sf = rt.FieldByIndex(fieldIndex)
+				fe, err = b.makeObjectExec(typeName, fields, possibleTypes, nonNull, sf.Type, false)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("%s\n\tused by (%s).%s", err, resolverType, m.Name)
+			}
+
+			var argsPacker *packer.StructPacker
+			var hasError bool
+			var hasContext bool
+
+			// Validate resolver method only when there is one
+			if methodIndex != -1 {
+				in := make([]reflect.Type, m.Type.NumIn())
+				for i := range in {
+					in[i] = m.Type.In(i)
+				}
+				if methodHasReceiver {
+					in = in[1:] // first parameter is receiver
+				}
+
+				hasContext = len(in) > 0 && in[0] == contextType
+				if hasContext {
+					in = in[1:]
+				}
+
+				if len(in) > 0 {
+					return nil, fmt.Errorf("too many parameters")
+				}
+
+				maxNumOfReturns := 2
+				if m.Type.NumOut() < maxNumOfReturns-1 {
+					return nil, fmt.Errorf("too few return values")
+				}
+
+				if m.Type.NumOut() > maxNumOfReturns {
+					return nil, fmt.Errorf("too many return values")
+				}
+
+				hasError = m.Type.NumOut() == maxNumOfReturns
+				if hasError {
+					if m.Type.Out(maxNumOfReturns-1) != errorType {
+						return nil, fmt.Errorf(`must have "error" as its last return value`)
+					}
+				}
+			}
+
+			fe2 := &Field{
+				TypeName:    typeName,
+				MethodIndex: methodIndex,
+				FieldIndex:  fieldIndex,
+				HasContext:  hasContext,
+				ArgsPacker:  argsPacker,
+				HasError:    hasError,
+				TraceLabel:  fmt.Sprintf("GraphQL field: %s.%s", typeName, typeName),
+				Field:       schema.Field{Name: strings.ToLower(typeName), Type: &common.RootResolver{}},
+			}
+
+			var out reflect.Type
+			if methodIndex != -1 {
+				out = m.Type.Out(0)
+				sub, ok := b.schema.EntryPoints["subscription"]
+				if ok && typeName == sub.TypeName() && out.Kind() == reflect.Chan {
+					out = m.Type.Out(0).Elem()
+				}
+			} else {
+				out = sf.Type
+			}
+			if err := b.assignExec(&fe2.ValueExec, &common.RootResolver{}, out, false); err != nil {
+				return nil, err
+			}
+			if err != nil {
+				return nil, fmt.Errorf("%s\n\tused by (%s).%s", err, resolverType, m.Name)
+			}
+			return &RootResolver{
+				FunctionResolver: fe2,
+				Query:            fe.(*Object),
+			}, err
+		}()
+		if fe != nil {
+			return fe, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 	for _, f := range fields {
 		var fieldIndex []int
 		methodIndex := findMethod(resolverType, f.Name)
@@ -276,7 +435,7 @@ func (b *execBuilder) makeObjectExec(typeName string, fields schema.FieldList, p
 			a := &TypeAssertion{
 				MethodIndex: methodIndex,
 			}
-			if err := b.assignExec(&a.TypeExec, impl, resolverType.Method(methodIndex).Type.Out(0)); err != nil {
+			if err := b.assignExec(&a.TypeExec, impl, resolverType.Method(methodIndex).Type.Out(0), false); err != nil {
 				return nil, err
 			}
 			typeAssertions[impl.Name] = a
@@ -291,6 +450,7 @@ func (b *execBuilder) makeObjectExec(typeName string, fields schema.FieldList, p
 }
 
 var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
+var varsType = reflect.TypeOf((*map[string]interface{})(nil)).Elem()
 var errorType = reflect.TypeOf((*error)(nil)).Elem()
 
 func (b *execBuilder) makeFieldExec(typeName string, f *schema.Field, m reflect.Method, sf reflect.StructField,
@@ -369,7 +529,7 @@ func (b *execBuilder) makeFieldExec(typeName string, f *schema.Field, m reflect.
 	} else {
 		out = sf.Type
 	}
-	if err := b.assignExec(&fe.ValueExec, f.Type, out); err != nil {
+	if err := b.assignExec(&fe.ValueExec, f.Type, out, false); err != nil {
 		return nil, err
 	}
 

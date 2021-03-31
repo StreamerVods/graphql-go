@@ -34,7 +34,7 @@ func TestSchema_ToJSON(t *testing.T) {
 		},
 		{
 			Name: "Star Wars Schema",
-			Args: args{Schema: graphql.MustParseSchema(starwars.Schema, &starwars.Resolver{})},
+			Args: args{Schema: graphql.MustParseSchema(starwars.Schema, starwars.NewResolver(), graphql.UseFieldResolvers())},
 			Want: want{JSON: mustReadFile("example/starwars/introspect.json")},
 		},
 		{
@@ -56,6 +56,7 @@ func TestSchema_ToJSON(t *testing.T) {
 			if err != nil {
 				t.Fatalf("got: invalid JSON: %s", err)
 			}
+
 			want, err := formatJSON(tt.Want.JSON)
 			if err != nil {
 				t.Fatalf("want: invalid JSON: %s", err)
