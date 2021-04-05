@@ -22,34 +22,108 @@ type Response struct {
 
 func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *query.Operation) <-chan *Response {
 	var result reflect.Value
-	var f *fieldToExec
+	var f *selected.SchemaField
 	var err *errors.QueryError
-	func() {
+	rawErr := func() error {
 		defer r.handlePanic(ctx)
-
 		sels := selected.ApplyOperation(&r.Request, s, op)
+		var resolver reflect.Value
+		if s.ResolverInfo.IsFunc {
+			args := []reflect.Value{}
+			if s.ResolverInfo.HasContext {
+				ctx = contextWithSelectedFields(ctx, sels)
+				args = append(args, reflect.ValueOf(ctx))
+			}
+			if s.ResolverInfo.HasVariables {
+				args = append(args, reflect.ValueOf(r.Vars))
+			}
+			vals := s.Resolver.Call(args)
+			if len(vals) > 1 {
+				err := vals[1].Interface()
+				if err != nil {
+					switch t := err.(type) {
+					case error:
+						return t
+					default:
+						return fmt.Errorf("%v", err)
+					}
+				}
+			}
+			resolver = vals[0]
+			if resolver.IsNil() {
+				return fmt.Errorf("resolver is nil")
+			}
+		} else {
+			resolver = s.Resolver
+		}
+
 		var fields []*fieldToExec
-		collectFieldsToResolve(sels, s, s.Resolver, &fields, make(map[string]*fieldToExec))
+		collectFieldsToResolve(sels, s, resolver, &fields, make(map[string]*fieldToExec))
 
 		// TODO: move this check into validation.Validate
 		if len(fields) != 1 {
 			err = errors.Errorf("%s", "can subscribe to at most one subscription at a time")
-			return
+			return nil
 		}
-		f = fields[0]
+		f = fields[0].field
+
+		switch f.Type.(type) {
+		case *common.RootResolver:
+			if len(f.Sels) != 1 {
+				err = errors.Errorf("%s", "can subscribe to at most one subscription at a time")
+				return nil
+			}
+			if f.MethodIndex != -1 {
+				m := resolver.Method(f.MethodIndex)
+				mtype := m.Type()
+				count := mtype.NumIn()
+				vals := []reflect.Value{}
+				if count != 0 {
+					vals = append(vals, reflect.ValueOf(ctx))
+					count--
+				}
+				if count != 0 {
+					return fmt.Errorf("too many parameters")
+				}
+				outs := m.Call(vals)
+				count = len(outs)
+				if count == 0 {
+					return fmt.Errorf("resolver is nil")
+				}
+				resolver = outs[0]
+				if count == 2 {
+					err := vals[1].Interface()
+					if err != nil {
+						switch t := err.(type) {
+						case error:
+							return t
+						default:
+							return fmt.Errorf("%v", err)
+						}
+					}
+				}
+			} else {
+				resolver = resolver.Elem().FieldByIndex(f.FieldIndex)
+			}
+			if resolver.IsNil() {
+				return fmt.Errorf("resolver is nil")
+			}
+			f = f.Sels[0].(*selected.SchemaField)
+		}
 
 		var in []reflect.Value
-		if f.field.HasContext {
-			ctx = contextWithSelectedFields(ctx, f.sels)
+		if f.HasContext {
+			ctx = contextWithSelectedFields(ctx, f.Sels)
 			in = append(in, reflect.ValueOf(ctx))
 		}
-		if f.field.ArgsPacker != nil {
-			in = append(in, f.field.PackedArgs)
+		if f.ArgsPacker != nil {
+			in = append(in, f.PackedArgs)
 		}
-		callOut := f.resolver.Method(f.field.MethodIndex).Call(in)
+
+		callOut := resolver.Method(f.MethodIndex).Call(in)
 		result = callOut[0]
 
-		if f.field.HasError && !callOut[1].IsNil() {
+		if f.HasError && !callOut[1].IsNil() {
 			switch resolverErr := callOut[1].Interface().(type) {
 			case *errors.QueryError:
 				err = resolverErr
@@ -60,7 +134,12 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *query
 				panic(fmt.Errorf("can only deal with *QueryError and error types, got %T", resolverErr))
 			}
 		}
+		return nil
 	}()
+
+	if rawErr != nil {
+		return sendAndReturnClosed(&Response{Errors: []*errors.QueryError{errors.Errorf("%s", rawErr)}})
+	}
 
 	// Handles the case where the locally executed func above panicked
 	if len(r.Request.Errs) > 0 {
@@ -72,10 +151,10 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *query
 	}
 
 	if err != nil {
-		if _, nonNullChild := f.field.Type.(*common.NonNull); nonNullChild {
+		if _, nonNullChild := f.Type.(*common.NonNull); nonNullChild {
 			return sendAndReturnClosed(&Response{Errors: []*errors.QueryError{err}})
 		}
-		return sendAndReturnClosed(&Response{Data: []byte(fmt.Sprintf(`{"%s":null}`, f.field.Alias)), Errors: []*errors.QueryError{err}})
+		return sendAndReturnClosed(&Response{Data: []byte(fmt.Sprintf(`{"%s":null}`, f.Alias)), Errors: []*errors.QueryError{err}})
 	}
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -140,15 +219,15 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *query
 						defer subR.handlePanic(subCtx)
 
 						var buf bytes.Buffer
-						subR.execSelectionSet(subCtx, f.sels, f.field.Type, &pathSegment{nil, f.field.Alias}, s, resp, &buf)
+						subR.execSelectionSet(subCtx, f.Sels, f.Type, &pathSegment{nil, f.Alias}, s, resp, &buf)
 
 						propagateChildError := false
-						if _, nonNullChild := f.field.Type.(*common.NonNull); nonNullChild && resolvedToNull(&buf) {
+						if _, nonNullChild := f.Type.(*common.NonNull); nonNullChild && resolvedToNull(&buf) {
 							propagateChildError = true
 						}
 
 						if !propagateChildError {
-							out.WriteString(fmt.Sprintf(`{"%s":`, f.field.Alias))
+							out.WriteString(fmt.Sprintf(`{"%s":`, f.Alias))
 							out.Write(buf.Bytes())
 							out.WriteString(`}`)
 						}

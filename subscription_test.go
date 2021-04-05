@@ -573,3 +573,162 @@ func TestSchemaSubscribe_PanicInResolver(t *testing.T) {
 		},
 	})
 }
+
+const schema2 = `
+schema {
+	query: Query
+	subscription: Subscription
+}
+
+type Query {
+	hello2: String!
+}
+
+type Subscription {
+	hello: String!
+	hello2: Int!
+}
+`
+
+type resolver struct {
+	Subscription *subRes
+}
+
+type subRes struct{}
+
+// func (*resolver) Subscription() *subRes {
+// 	return &subRes{}
+// }
+
+func (r *subRes) Hello() <-chan string {
+	ch := make(chan string, 1)
+	go func() {
+		ch <- "world0"
+		ch <- "world1"
+		ch <- "world2"
+		ch <- "world3"
+		close(ch)
+	}()
+	return ch
+}
+
+func (*subRes) Hello2() <-chan int32 {
+	ch := make(chan int32, 1)
+	go func() {
+		ch <- 0
+		ch <- 1
+		ch <- 2
+		ch <- 3
+		close(ch)
+	}()
+	return ch
+}
+
+func (*resolver) Hello2() string {
+	return "sadge"
+}
+
+func Resolver() *resolver {
+	return &resolver{Subscription: &subRes{}}
+}
+
+func TestSchemaSubscribeResolvers(t *testing.T) {
+	gqltesting.RunSubscribes(t, []*gqltesting.TestSubscription{
+		{
+			Name:   "ok",
+			Schema: graphql.MustParseSchema(schema2, Resolver, graphql.UseFieldResolvers()),
+			Query: `
+				subscription {
+					hello
+				}
+			`,
+			ExpectedResults: []gqltesting.TestResponse{
+				{
+					Data: json.RawMessage(`
+						{
+							"hello": "world0"
+						}
+					`),
+				},
+				{
+					Data: json.RawMessage(`
+						{
+							"hello": "world1"
+						}
+					`),
+				},
+				{
+					Data: json.RawMessage(`
+						{
+							"hello": "world2"
+						}
+					`),
+				},
+				{
+					Data: json.RawMessage(`
+						{
+							"hello": "world3"
+						}
+					`),
+				},
+			},
+		},
+		{
+			Name:   "ok",
+			Schema: graphql.MustParseSchema(schema2, Resolver, graphql.UseFieldResolvers()),
+			Query: `
+				subscription {
+					hello2
+				}
+			`,
+			ExpectedResults: []gqltesting.TestResponse{
+				{
+					Data: json.RawMessage(`
+						{
+							"hello2": 0
+						}
+					`),
+				},
+				{
+					Data: json.RawMessage(`
+						{
+							"hello2": 1
+						}
+					`),
+				},
+				{
+					Data: json.RawMessage(`
+						{
+							"hello2": 2
+						}
+					`),
+				},
+				{
+					Data: json.RawMessage(`
+						{
+							"hello2": 3
+						}
+					`),
+				},
+			},
+		},
+		{
+			Name:   "ok",
+			Schema: graphql.MustParseSchema(schema2, Resolver(), graphql.UseFieldResolvers()),
+			Query: `
+				query {
+					hello2
+				}
+			`,
+			ExpectedResults: []gqltesting.TestResponse{
+				{
+					Data: json.RawMessage(`
+						{
+							"hello2": "sadge"
+						}
+					`),
+				},
+			},
+		},
+	})
+}
