@@ -19,7 +19,6 @@ import (
 	"github.com/graph-gophers/graphql-go/log"
 	"github.com/graph-gophers/graphql-go/selection"
 	"github.com/graph-gophers/graphql-go/trace"
-	"github.com/graph-gophers/graphql-go/types"
 )
 
 // ParseSchema parses a GraphQL schema and attaches the given root resolver. It returns an error if
@@ -44,7 +43,7 @@ func ParseSchema(schemaString string, resolver interface{}, opts ...SchemaOpt) (
 		}
 	}
 
-	if err := schema.Parse(s.schema, schemaString, s.useStringDescriptions); err != nil {
+	if err := s.schema.Parse(schemaString, s.useStringDescriptions); err != nil {
 		return nil, err
 	}
 	if err := s.validateSchema(); err != nil {
@@ -71,7 +70,7 @@ func MustParseSchema(schemaString string, resolver interface{}, opts ...SchemaOp
 
 // Schema represents a GraphQL schema with an optional resolver.
 type Schema struct {
-	schema *types.Schema
+	schema *schema.Schema
 	res    *resolvable.Schema
 
 	maxDepth                 int
@@ -82,10 +81,6 @@ type Schema struct {
 	useStringDescriptions    bool
 	disableIntrospection     bool
 	subscribeResolverTimeout time.Duration
-}
-
-func (s *Schema) ASTSchema() *types.Schema {
-	return s.schema
 }
 
 // SchemaOpt is an option to pass to ParseSchema or MustParseSchema.
@@ -247,7 +242,7 @@ func (s *Schema) exec(ctx context.Context, queryString string, operationName str
 	}
 	for _, v := range op.Vars {
 		if _, ok := variables[v.Name.Name]; !ok && v.Default != nil {
-			variables[v.Name.Name] = v.Default.Deserialize(nil)
+			variables[v.Name.Name] = v.Default.Value(nil)
 		}
 	}
 
@@ -307,7 +302,7 @@ func (t *validationBridgingTracer) TraceValidation(context.Context) trace.TraceV
 	return t.tracer.TraceValidation()
 }
 
-func validateRootOp(s *types.Schema, name string, mandatory bool) error {
+func validateRootOp(s *schema.Schema, name string, mandatory bool) error {
 	t, ok := s.EntryPoints[name]
 	if !ok {
 		if mandatory {
@@ -321,7 +316,7 @@ func validateRootOp(s *types.Schema, name string, mandatory bool) error {
 	return nil
 }
 
-func getOperation(document *types.ExecutableDefinition, operationName string) (*types.OperationDefinition, error) {
+func getOperation(document *query.Document, operationName string) (*query.Operation, error) {
 	if len(document.Operations) == 0 {
 		return nil, fmt.Errorf("no operations in query document")
 	}

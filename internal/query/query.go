@@ -6,35 +6,113 @@ import (
 
 	"github.com/graph-gophers/graphql-go/errors"
 	"github.com/graph-gophers/graphql-go/internal/common"
-	"github.com/graph-gophers/graphql-go/types"
 )
+
+type Document struct {
+	Operations OperationList
+	Fragments  FragmentList
+}
+
+type OperationList []*Operation
+
+func (l OperationList) Get(name string) *Operation {
+	for _, f := range l {
+		if f.Name.Name == name {
+			return f
+		}
+	}
+	return nil
+}
+
+type FragmentList []*FragmentDecl
+
+func (l FragmentList) Get(name string) *FragmentDecl {
+	for _, f := range l {
+		if f.Name.Name == name {
+			return f
+		}
+	}
+	return nil
+}
+
+type Operation struct {
+	Type       OperationType
+	Name       common.Ident
+	Vars       common.InputValueList
+	Selections []Selection
+	Directives common.DirectiveList
+	Loc        errors.Location
+}
+
+type OperationType string
 
 const (
-	Query        types.OperationType = "QUERY"
-	Mutation                         = "MUTATION"
-	Subscription                     = "SUBSCRIPTION"
+	Query        OperationType = "QUERY"
+	Mutation                   = "MUTATION"
+	Subscription               = "SUBSCRIPTION"
 )
 
-func Parse(queryString string) (*types.ExecutableDefinition, *errors.QueryError) {
+type Fragment struct {
+	On         common.TypeName
+	Selections []Selection
+}
+
+type FragmentDecl struct {
+	Fragment
+	Name       common.Ident
+	Directives common.DirectiveList
+	Loc        errors.Location
+}
+
+type Selection interface {
+	isSelection()
+}
+
+type Field struct {
+	Alias           common.Ident
+	Name            common.Ident
+	Arguments       common.ArgumentList
+	Directives      common.DirectiveList
+	Selections      []Selection
+	SelectionSetLoc errors.Location
+}
+
+type InlineFragment struct {
+	Fragment
+	Directives common.DirectiveList
+	Loc        errors.Location
+}
+
+type FragmentSpread struct {
+	Name       common.Ident
+	Directives common.DirectiveList
+	Loc        errors.Location
+}
+
+func (Field) isSelection()          {}
+func (InlineFragment) isSelection() {}
+func (FragmentSpread) isSelection() {}
+
+func Parse(queryString string) (*Document, *errors.QueryError) {
 	l := common.NewLexer(queryString, false)
 
-	var execDef *types.ExecutableDefinition
-	err := l.CatchSyntaxError(func() { execDef = parseExecutableDefinition(l) })
+	var doc *Document
+	err := l.CatchSyntaxError(func() { doc = parseDocument(l) })
 	if err != nil {
 		return nil, err
 	}
 
-	return execDef, nil
+	return doc, nil
 }
 
-func parseExecutableDefinition(l *common.Lexer) *types.ExecutableDefinition {
-	ed := &types.ExecutableDefinition{}
+func parseDocument(l *common.Lexer) *Document {
+	d := &Document{}
 	l.ConsumeWhitespace()
 	for l.Peek() != scanner.EOF {
 		if l.Peek() == '{' {
-			op := &types.OperationDefinition{Type: Query, Loc: l.Location()}
+			op := &Operation{Type: Query, Loc: l.Location()}
 			op.Selections = parseSelectionSet(l)
-			ed.Operations = append(ed.Operations, op)
+			d.Operations = append(d.Operations, op)
 			continue
 		}
 
@@ -43,28 +121,28 @@ func parseExecutableDefinition(l *common.Lexer) *types.ExecutableDefinition {
 		case "query":
 			op := parseOperation(l, Query)
 			op.Loc = loc
-			ed.Operations = append(ed.Operations, op)
+			d.Operations = append(d.Operations, op)
 
 		case "mutation":
-			ed.Operations = append(ed.Operations, parseOperation(l, Mutation))
+			d.Operations = append(d.Operations, parseOperation(l, Mutation))
 
 		case "subscription":
-			ed.Operations = append(ed.Operations, parseOperation(l, Subscription))
+			d.Operations = append(d.Operations, parseOperation(l, Subscription))
 
 		case "fragment":
 			frag := parseFragment(l)
 			frag.Loc = loc
-			ed.Fragments = append(ed.Fragments, frag)
+			d.Fragments = append(d.Fragments, frag)
 
 		default:
 			l.SyntaxError(fmt.Sprintf(`unexpected %q, expecting "fragment"`, x))
 		}
 	}
-	return ed
+	return d
 }
 
-func parseOperation(l *common.Lexer, opType types.OperationType) *types.OperationDefinition {
-	op := &types.OperationDefinition{Type: opType}
+func parseOperation(l *common.Lexer, opType OperationType) *Operation {
+	op := &Operation{Type: opType}
 	op.Name.Loc = l.Location()
 	if l.Peek() == scanner.Ident {
 		op.Name = l.ConsumeIdentWithLoc()
@@ -85,18 +163,18 @@ func parseOperation(l *common.Lexer, opType types.OperationType) *types.Operatio
 	return op
 }
 
-func parseFragment(l *common.Lexer) *types.FragmentDefinition {
-	f := &types.FragmentDefinition{}
+func parseFragment(l *common.Lexer) *FragmentDecl {
+	f := &FragmentDecl{}
 	f.Name = l.ConsumeIdentWithLoc()
 	l.ConsumeKeyword("on")
-	f.On = types.TypeName{Ident: l.ConsumeIdentWithLoc()}
+	f.On = common.TypeName{Ident: l.ConsumeIdentWithLoc()}
 	f.Directives = common.ParseDirectives(l)
 	f.Selections = parseSelectionSet(l)
 	return f
 }
 
-func parseSelectionSet(l *common.Lexer) []types.Selection {
-	var sels []types.Selection
+func parseSelectionSet(l *common.Lexer) []Selection {
+	var sels []Selection
 	l.ConsumeToken('{')
 	for l.Peek() != '}' {
 		sels = append(sels, parseSelection(l))
@@ -105,15 +183,15 @@ func parseSelectionSet(l *common.Lexer) []types.Selection {
 	return sels
 }
 
-func parseSelection(l *common.Lexer) types.Selection {
+func parseSelection(l *common.Lexer) Selection {
 	if l.Peek() == '.' {
 		return parseSpread(l)
 	}
-	return parseFieldDef(l)
+	return parseField(l)
 }
 
-func parseFieldDef(l *common.Lexer) *types.Field {
-	f := &types.Field{}
+func parseField(l *common.Lexer) *Field {
+	f := &Field{}
 	f.Alias = l.ConsumeIdentWithLoc()
 	f.Name = f.Alias
 	if l.Peek() == ':' {
@@ -121,34 +199,34 @@ func parseFieldDef(l *common.Lexer) *types.Field {
 		f.Name = l.ConsumeIdentWithLoc()
 	}
 	if l.Peek() == '(' {
-		f.Arguments = common.ParseArgumentList(l)
+		f.Arguments = common.ParseArguments(l)
 	}
 	f.Directives = common.ParseDirectives(l)
 	if l.Peek() == '{' {
 		f.SelectionSetLoc = l.Location()
-		f.SelectionSet = parseSelectionSet(l)
+		f.Selections = parseSelectionSet(l)
 	}
 	return f
 }
 
-func parseSpread(l *common.Lexer) types.Selection {
+func parseSpread(l *common.Lexer) Selection {
 	loc := l.Location()
 	l.ConsumeToken('.')
 	l.ConsumeToken('.')
 	l.ConsumeToken('.')
 
-	f := &types.InlineFragment{Loc: loc}
+	f := &InlineFragment{Loc: loc}
 	if l.Peek() == scanner.Ident {
 		ident := l.ConsumeIdentWithLoc()
 		if ident.Name != "on" {
-			fs := &types.FragmentSpread{
+			fs := &FragmentSpread{
 				Name: ident,
 				Loc:  loc,
 			}
 			fs.Directives = common.ParseDirectives(l)
 			return fs
 		}
-		f.On = types.TypeName{Ident: l.ConsumeIdentWithLoc()}
+		f.On = common.TypeName{Ident: l.ConsumeIdentWithLoc()}
 	}
 	f.Directives = common.ParseDirectives(l)
 	f.Selections = parseSelectionSet(l)

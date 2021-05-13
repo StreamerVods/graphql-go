@@ -2,57 +2,74 @@ package common
 
 import (
 	"github.com/graph-gophers/graphql-go/errors"
-	"github.com/graph-gophers/graphql-go/types"
 )
 
-func ParseType(l *Lexer) types.Type {
+type Type interface {
+	Kind() string
+	String() string
+}
+
+type List struct {
+	OfType Type
+}
+
+type NonNull struct {
+	OfType Type
+}
+
+type TypeName struct {
+	Ident
+}
+
+type RootResolver struct{}
+
+func (*List) Kind() string         { return "LIST" }
+func (*NonNull) Kind() string      { return "NON_NULL" }
+func (*RootResolver) Kind() string { return "ROOT_RESOLVER" }
+func (*TypeName) Kind() string     { panic("TypeName needs to be resolved to actual type") }
+
+func (t *List) String() string       { return "[" + t.OfType.String() + "]" }
+func (t *NonNull) String() string    { return t.OfType.String() + "!" }
+func (*RootResolver) String() string { panic("RootResolver should be ignored") }
+func (*TypeName) String() string     { panic("TypeName needs to be resolved to actual type") }
+
+func ParseType(l *Lexer) Type {
 	t := parseNullType(l)
 	if l.Peek() == '!' {
 		l.ConsumeToken('!')
-		return &types.NonNull{OfType: t}
+		return &NonNull{OfType: t}
 	}
 	return t
 }
 
-func parseNullType(l *Lexer) types.Type {
+func parseNullType(l *Lexer) Type {
 	if l.Peek() == '[' {
 		l.ConsumeToken('[')
 		ofType := ParseType(l)
 		l.ConsumeToken(']')
-		return &types.List{OfType: ofType}
+		return &List{OfType: ofType}
 	}
 
-	return &types.TypeName{Ident: l.ConsumeIdentWithLoc()}
+	return &TypeName{Ident: l.ConsumeIdentWithLoc()}
 }
 
-type Resolver func(name string) types.Type
+type Resolver func(name string) Type
 
-// ResolveType attempts to resolve a type's name against a resolving function.
-// This function is used when one needs to check if a TypeName exists in the resolver (typically a Schema).
-//
-// In the example below, ResolveType would be used to check if the resolving function
-// returns a valid type for Dimension:
-//
-// type Profile {
-//    picture(dimensions: Dimension): Url
-// }
-//
-// ResolveType recursively unwraps List and NonNull types until a NamedType is reached.
-func ResolveType(t types.Type, resolver Resolver) (types.Type, *errors.QueryError) {
+func ResolveType(t Type, resolver Resolver) (Type, *errors.QueryError) {
 	switch t := t.(type) {
-	case *types.List:
+	case *List:
 		ofType, err := ResolveType(t.OfType, resolver)
 		if err != nil {
 			return nil, err
 		}
-		return &types.List{OfType: ofType}, nil
-	case *types.NonNull:
+		return &List{OfType: ofType}, nil
+	case *NonNull:
 		ofType, err := ResolveType(t.OfType, resolver)
 		if err != nil {
 			return nil, err
 		}
-		return &types.NonNull{OfType: ofType}, nil
-	case *types.TypeName:
+		return &NonNull{OfType: ofType}, nil
+	case *TypeName:
 		refT := resolver(t.Name)
 		if refT == nil {
 			err := errors.Errorf("Unknown type %q.", t.Name)

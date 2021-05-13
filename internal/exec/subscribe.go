@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/graph-gophers/graphql-go/errors"
+	"github.com/graph-gophers/graphql-go/internal/common"
 	"github.com/graph-gophers/graphql-go/internal/exec/resolvable"
 	"github.com/graph-gophers/graphql-go/internal/exec/selected"
-	"github.com/graph-gophers/graphql-go/types"
+	"github.com/graph-gophers/graphql-go/internal/query"
 )
 
 type Response struct {
@@ -19,7 +20,7 @@ type Response struct {
 	Errors []*errors.QueryError
 }
 
-func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *types.OperationDefinition) <-chan *Response {
+func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *query.Operation) <-chan *Response {
 	var result reflect.Value
 	var f *selected.SchemaField
 	var err *errors.QueryError
@@ -67,7 +68,7 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *types
 		f = fields[0].field
 
 		switch f.Type.(type) {
-		case *types.RootResolverTypeDefinition:
+		case *common.RootResolver:
 			if len(f.Sels) != 1 {
 				err = errors.Errorf("%s", "can subscribe to at most one subscription at a time")
 				return nil
@@ -150,7 +151,7 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *types
 	}
 
 	if err != nil {
-		if _, nonNullChild := f.Field.Type.(*types.NonNull); nonNullChild {
+		if _, nonNullChild := f.Type.(*common.NonNull); nonNullChild {
 			return sendAndReturnClosed(&Response{Errors: []*errors.QueryError{err}})
 		}
 		return sendAndReturnClosed(&Response{Data: []byte(fmt.Sprintf(`{"%s":null}`, f.Alias)), Errors: []*errors.QueryError{err}})
@@ -221,7 +222,7 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *types
 						subR.execSelectionSet(subCtx, f.Sels, f.Type, &pathSegment{nil, f.Alias}, s, resp, &buf)
 
 						propagateChildError := false
-						if _, nonNullChild := f.Field.Type.(*types.NonNull); nonNullChild && resolvedToNull(&buf) {
+						if _, nonNullChild := f.Type.(*common.NonNull); nonNullChild && resolvedToNull(&buf) {
 							propagateChildError = true
 						}
 
