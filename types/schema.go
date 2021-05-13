@@ -28,7 +28,8 @@ type Schema struct {
 	// http://spec.graphql.org/#sec-Type-System.Directives
 	Directives map[string]*DirectiveDefinition
 
-	UseFieldResolvers bool
+	UseFieldResolvers    bool
+	DisableRootResolvers bool
 
 	EntryPointNames map[string]string
 	Objects         []*ObjectTypeDefinition

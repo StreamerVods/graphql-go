@@ -351,14 +351,14 @@ func (b *execBuilder) makeObjectExec(typeName string, fields types.FieldsDefinit
 			}
 
 			fe2 := &Field{
-				TypeName:    typeName,
-				MethodIndex: methodIndex,
-				FieldIndex:  fieldIndex,
-				HasContext:  hasContext,
-				ArgsPacker:  argsPacker,
-				HasError:    hasError,
-				TraceLabel:  fmt.Sprintf("GraphQL field: %s.%s", typeName, typeName),
-				Field:       schema.Field{Name: strings.ToLower(typeName), Type: &common.RootResolver{}},
+				TypeName:        typeName,
+				MethodIndex:     methodIndex,
+				FieldIndex:      fieldIndex,
+				HasContext:      hasContext,
+				ArgsPacker:      argsPacker,
+				HasError:        hasError,
+				TraceLabel:      fmt.Sprintf("GraphQL field: %s.%s", typeName, typeName),
+				FieldDefinition: types.FieldDefinition{Name: strings.ToLower(typeName), Type: &types.RootResolverTypeDefinition{}},
 			}
 
 			var out reflect.Type
@@ -371,7 +371,7 @@ func (b *execBuilder) makeObjectExec(typeName string, fields types.FieldsDefinit
 			} else {
 				out = sf.Type
 			}
-			if err := b.assignExec(&fe2.ValueExec, &common.RootResolver{}, out, false); err != nil {
+			if err := b.assignExec(&fe2.ValueExec, &types.RootResolverTypeDefinition{}, out, false); err != nil {
 				return nil, err
 			}
 			if err != nil {
