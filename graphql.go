@@ -115,6 +115,13 @@ func DisableRootResolvers() SchemaOpt {
 	}
 }
 
+// UseFieldResolvers specifies whether to use struct field resolvers
+func HidePanics() SchemaOpt {
+	return func(s *Schema) {
+		s.schema.HidePanics = true
+	}
+}
+
 // MaxDepth specifies the maximum field nesting depth in a query. The default is 0 which disables max depth checking.
 func MaxDepth(n int) SchemaOpt {
 	return func(s *Schema) {

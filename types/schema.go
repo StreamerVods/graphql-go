@@ -30,6 +30,7 @@ type Schema struct {
 
 	UseFieldResolvers    bool
 	DisableRootResolvers bool
+	HidePanics           bool
 
 	EntryPointNames map[string]string
 	Objects         []*ObjectTypeDefinition

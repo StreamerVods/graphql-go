@@ -36,7 +36,7 @@ type Request struct {
 func (r *Request) handlePanic(ctx context.Context) {
 	if value := recover(); value != nil {
 		r.Logger.LogPanic(ctx, value)
-		r.AddError(makePanicError(value))
+		r.AddError(makePanicError(value, r.Schema.HidePanics))
 	}
 }
 
@@ -44,7 +44,10 @@ type extensionser interface {
 	Extensions() map[string]interface{}
 }
 
-func makePanicError(value interface{}) *errors.QueryError {
+func makePanicError(value interface{}, hidePanics bool) *errors.QueryError {
+	if hidePanics {
+		return errors.Errorf("internal server error")
+	}
 	return errors.Errorf("panic occurred: %v", value)
 }
 
@@ -52,7 +55,18 @@ func (r *Request) Execute(ctx context.Context, s *resolvable.Schema, op *types.O
 	var out bytes.Buffer
 	err := func() error {
 		defer r.handlePanic(ctx)
-		sels := selected.ApplyOperation(&r.Request, s, op)
+		paniced := false
+		sels := (func() []selected.Selection {
+			defer func() {
+				if err := recover(); err != nil {
+					paniced = true
+				}
+			}()
+			return selected.ApplyOperation(&r.Request, s, op)
+		})()
+		if paniced {
+			return errors.Errorf("invalid input")
+		}
 		var resolver reflect.Value
 		if s.ResolverInfo.IsFunc {
 			args := []reflect.Value{}
@@ -256,7 +270,7 @@ func execFieldSelection(ctx context.Context, r *Request, s *resolvable.Schema, f
 		defer func() {
 			if panicValue := recover(); panicValue != nil {
 				r.Logger.LogPanic(ctx, panicValue)
-				err = makePanicError(panicValue)
+				err = makePanicError(panicValue, s.HidePanics)
 				err.Path = path.toSlice()
 			}
 		}()

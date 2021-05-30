@@ -574,6 +574,63 @@ func TestSchemaSubscribe_PanicInResolver(t *testing.T) {
 	})
 }
 
+type subscriptionsPanicInResolver2 struct{}
+
+func (r *subscriptionsPanicInResolver2) Panic(args struct{ ID int32 }) <-chan int32 {
+	return nil
+}
+
+func TestSchemaSubscribe_PanicInResolver2(t *testing.T) {
+	r := &struct {
+		*subscriptionsPanicInResolver2
+	}{
+		subscriptionsPanicInResolver2: &subscriptionsPanicInResolver2{},
+	}
+	gqltesting.RunSubscribe(t, &gqltesting.TestSubscription{
+		Schema: graphql.MustParseSchema(`
+			type Query {}
+			type Subscription {
+				panic(id: Int!): Int!
+			}
+		`, r, graphql.HidePanics()),
+		Query: `
+			subscription exec($v: Int!) {
+				panic(id: $v)
+			}
+		`,
+		Variables: map[string]interface{}{
+			"v": 1622352934719476001,
+		},
+		ExpectedResults: []gqltesting.TestResponse{
+			{Errors: []*qerrors.QueryError{{Message: "could not unmarshal 1622352934719476001 (int) into int32: not a 32-bit integer"}}},
+		},
+	})
+}
+
+func TestSchemaSubscribe_PanicInResolver3(t *testing.T) {
+	r := &struct {
+		*subscriptionsPanicInResolver
+	}{
+		subscriptionsPanicInResolver: &subscriptionsPanicInResolver{},
+	}
+	gqltesting.RunSubscribe(t, &gqltesting.TestSubscription{
+		Schema: graphql.MustParseSchema(`
+			type Query {}
+			type Subscription {
+				onPanic : String!
+			}
+		`, r, graphql.HidePanics()),
+		Query: `
+			subscription {
+				onPanic
+			}
+		`,
+		ExpectedResults: []gqltesting.TestResponse{
+			{Errors: []*qerrors.QueryError{{Message: "internal server error"}}},
+		},
+	})
+}
+
 const schema2 = `
 schema {
 	query: Query

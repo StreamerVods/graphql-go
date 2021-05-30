@@ -25,7 +25,18 @@ func (r *Request) Subscribe(ctx context.Context, s *resolvable.Schema, op *types
 	var err *errors.QueryError
 	rawErr := func() error {
 		defer r.handlePanic(ctx)
-		sels := selected.ApplyOperation(&r.Request, s, op)
+		paniced := false
+		sels := (func() []selected.Selection {
+			defer func() {
+				if err := recover(); err != nil {
+					paniced = true
+				}
+			}()
+			return selected.ApplyOperation(&r.Request, s, op)
+		})()
+		if paniced {
+			return errors.Errorf("invalid input")
+		}
 		var resolver reflect.Value
 		if s.ResolverInfo.IsFunc {
 			args := []reflect.Value{}
