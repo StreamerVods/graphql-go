@@ -24,28 +24,25 @@ func (s *Schema) Subscribe(ctx context.Context, queryString string, operationNam
 	if s.res.Resolver == (reflect.Value{}) {
 		return nil, errors.New("schema created without resolver, can not subscribe")
 	}
-	if _, ok := s.schema.EntryPoints["subscription"]; !ok {
-		return nil, errors.New("no subscriptions are offered by the schema")
-	}
-	return s.subscribe(ctx, queryString, operationName, variables, s.res), nil
+	return s.subscribe(ctx, queryString, operationName, variables, s.res)
 }
 
-func (s *Schema) subscribe(ctx context.Context, queryString string, operationName string, variables map[string]interface{}, res *resolvable.Schema) <-chan interface{} {
+func (s *Schema) subscribe(ctx context.Context, queryString string, operationName string, variables map[string]interface{}, res *resolvable.Schema) (<-chan interface{}, error) {
 	doc, qErr := query.Parse(queryString)
 	if qErr != nil {
-		return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{qErr}})
+		return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{qErr}}), nil
 	}
 
 	validationFinish := s.validationTracer.TraceValidation(ctx)
 	errs := validation.Validate(s.schema, doc, variables, s.maxDepth)
 	validationFinish(errs)
 	if len(errs) != 0 {
-		return sendAndReturnClosed(&Response{Errors: errs})
+		return sendAndReturnClosed(&Response{Errors: errs}), nil
 	}
 
 	op, err := getOperation(doc, operationName)
 	if err != nil {
-		return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{qerrors.Errorf("%s", err)}})
+		return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{qerrors.Errorf("%s", err)}}), nil
 	}
 
 	r := &exec.Request{
@@ -63,14 +60,18 @@ func (s *Schema) subscribe(ctx context.Context, queryString string, operationNam
 	for _, v := range op.Vars {
 		t, err := common.ResolveType(v.Type, s.schema.Resolve)
 		if err != nil {
-			return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{err}})
+			return sendAndReturnClosed(&Response{Errors: []*qerrors.QueryError{err}}), nil
 		}
 		varTypes[v.Name.Name] = introspection.WrapType(t)
 	}
 
 	if op.Type == query.Query || op.Type == query.Mutation {
 		data, errs := r.Execute(ctx, res, op)
-		return sendAndReturnClosed(&Response{Data: data, Errors: errs})
+		return sendAndReturnClosed(&Response{Data: data, Errors: errs}), nil
+	}
+
+	if _, ok := s.schema.EntryPoints["subscription"]; !ok {
+		return nil, errors.New("no subscriptions are offered by the schema")
 	}
 
 	responses := r.Subscribe(ctx, res, op)
@@ -85,7 +86,7 @@ func (s *Schema) subscribe(ctx context.Context, queryString string, operationNam
 		close(c)
 	}()
 
-	return c
+	return c, nil
 }
 
 func sendAndReturnClosed(resp *Response) chan interface{} {
